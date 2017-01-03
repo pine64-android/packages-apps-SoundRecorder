@@ -51,6 +51,11 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.widget.Toast;
+
 /**
  * Calculates remaining recording time based on available disk space and
  * optionally a maximum recording file size.
@@ -86,6 +91,7 @@ class RemainingTimeCalculator {
     // size of the file at that time
     private long mLastFileSize;
     
+
     public RemainingTimeCalculator() {
         mSDCardDirectory = Environment.getExternalStorageDirectory();
     }    
@@ -208,6 +214,8 @@ public class SoundRecorder extends Activity
     static final int BITRATE_AMR =  5900; // bits/sec
     static final int BITRATE_3GPP = 5900;
     
+    private static final int SOUND_RECORDER_PERMISSION_REQUEST = 1;
+
     WakeLock mWakeLock;
     String mRequestedType = AUDIO_ANY;
     Recorder mRecorder;
@@ -241,57 +249,34 @@ public class SoundRecorder extends Activity
     VUMeter mVUMeter;
     private BroadcastReceiver mSDCardMountEventReceiver = null;
 
+    private Intent mIntent;
+    private Bundle mBundle;
+
     @Override
     public void onCreate(Bundle icycle) {
         super.onCreate(icycle);
+        mIntent = getIntent();
+        mBundle = icycle;
 
-        Intent i = getIntent();
-        if (i != null) {
-            String s = i.getType();
-            if (AUDIO_AMR.equals(s) || AUDIO_3GPP.equals(s) || AUDIO_ANY.equals(s)
-                    || ANY_ANY.equals(s)) {
-                mRequestedType = s;
-            } else if (s != null) {
-                // we only support amr and 3gpp formats right now 
-                setResult(RESULT_CANCELED);
-                finish();
-                return;
+        try {
+            PackageInfo packageInfo = getPackageManager().getPackageInfo(
+                  getApplicationInfo().packageName, PackageManager.GET_PERMISSIONS);
+
+            if (packageInfo.requestedPermissions != null) {
+                for (String permission : packageInfo.requestedPermissions) {
+                    Log.v(TAG, "Checking permissions for: " + permission);
+                    if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(packageInfo.requestedPermissions,
+                                SOUND_RECORDER_PERMISSION_REQUEST);
+                        return;
+                    }
+                }
             }
-            
-            final String EXTRA_MAX_BYTES
-                = android.provider.MediaStore.Audio.Media.EXTRA_MAX_BYTES;
-            mMaxFileSize = i.getLongExtra(EXTRA_MAX_BYTES, -1);
+            createContinue();
+        } catch (NameNotFoundException e) {
+            Log.e(TAG, "Unable to load package's permissions", e);
+            Toast.makeText(this, R.string.runtime_permissions_error, Toast.LENGTH_SHORT).show();
         }
-        
-        if (AUDIO_ANY.equals(mRequestedType) || ANY_ANY.equals(mRequestedType)) {
-            mRequestedType = AUDIO_3GPP;
-        }
-        
-        setContentView(R.layout.main);
-
-        mRecorder = new Recorder();
-        mRecorder.setOnStateChangedListener(this);
-        mRemainingTimeCalculator = new RemainingTimeCalculator();
-
-        PowerManager pm 
-            = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        mWakeLock = pm.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, 
-                                    "SoundRecorder");
-
-        initResourceRefs();
-        
-        setResult(RESULT_CANCELED);
-        registerExternalStorageListener();
-        if (icycle != null) {
-            Bundle recorderState = icycle.getBundle(RECORDER_STATE_KEY);
-            if (recorderState != null) {
-                mRecorder.restoreState(recorderState);
-                mSampleInterrupted = recorderState.getBoolean(SAMPLE_INTERRUPTED_KEY, false);
-                mMaxFileSize = recorderState.getLong(MAX_FILE_SIZE_KEY, -1);
-            }
-        }
-        
-        updateUi();
     }
     
     @Override
@@ -307,7 +292,7 @@ public class SoundRecorder extends Activity
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         
-        if (mRecorder.sampleLength() == 0)
+        if ((mRecorder ==null) || (mRecorder.sampleLength() == 0))
             return;
 
         Bundle recorderState = new Bundle();
@@ -443,14 +428,18 @@ public class SoundRecorder extends Activity
 
     @Override
     public void onStop() {
-        mRecorder.stop();
+        if (mRecorder != null) {
+            mRecorder.stop();
+        }
         super.onStop();
     }
 
     @Override
     protected void onPause() {
-        mSampleInterrupted = mRecorder.state() == Recorder.RECORDING_STATE;
-        mRecorder.stop();
+        if (mRecorder != null) {
+            mSampleInterrupted = mRecorder.state() == Recorder.RECORDING_STATE;
+            mRecorder.stop();
+        }
         
         super.onPause();
     }
@@ -856,6 +845,82 @@ public class SoundRecorder extends Activity
                 .setPositiveButton(R.string.button_ok, null)
                 .setCancelable(false)
                 .show();
+        }
+    }
+
+    private void createContinue() {
+        if (mIntent != null) {
+            String s = mIntent.getType();
+            if (AUDIO_AMR.equals(s) || AUDIO_3GPP.equals(s) || AUDIO_ANY.equals(s)
+                    || ANY_ANY.equals(s)) {
+                mRequestedType = s;
+            } else if (s != null) {
+                // we only support amr and 3gpp formats right now
+                setResult(RESULT_CANCELED);
+                finish();
+                return;
+            }
+
+            final String EXTRA_MAX_BYTES
+                = android.provider.MediaStore.Audio.Media.EXTRA_MAX_BYTES;
+            mMaxFileSize = mIntent.getLongExtra(EXTRA_MAX_BYTES, -1);
+        }
+
+        if (AUDIO_ANY.equals(mRequestedType) || ANY_ANY.equals(mRequestedType)) {
+            mRequestedType = AUDIO_3GPP;
+        }
+
+        setContentView(R.layout.main);
+
+        mRecorder = new Recorder();
+        mRecorder.setOnStateChangedListener(this);
+        mRemainingTimeCalculator = new RemainingTimeCalculator();
+
+        PowerManager pm
+            = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        mWakeLock = pm.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK,
+                                    "SoundRecorder");
+
+        initResourceRefs();
+
+        setResult(RESULT_CANCELED);
+        registerExternalStorageListener();
+        if (mBundle != null) {
+            Bundle recorderState = mBundle.getBundle(RECORDER_STATE_KEY);
+            if (recorderState != null) {
+                mRecorder.restoreState(recorderState);
+                mSampleInterrupted = recorderState.getBoolean(SAMPLE_INTERRUPTED_KEY, false);
+                mMaxFileSize = recorderState.getLong(MAX_FILE_SIZE_KEY, -1);
+            }
+        }
+
+        updateUi();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String permissions[], int[] grantResults) {
+        if (requestCode == SOUND_RECORDER_PERMISSION_REQUEST) {
+            boolean bAllGranted = true;
+            int permissionLength = permissions.length;
+            int resultLength = grantResults.length;
+            if ((permissionLength == resultLength) && (permissionLength > 0)) {
+                for (int i = 0; i < permissionLength; i++) {
+                    if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
+                        bAllGranted = false;
+                    }
+                }
+            } else {
+                bAllGranted = false;
+            }
+
+            if (bAllGranted == true) {
+                createContinue();
+            } else {
+                Log.v(TAG, "Permission not granted.");
+                Toast.makeText(this, R.string.runtime_permissions_error, Toast.LENGTH_SHORT).show();
+                finish();
+            }
         }
     }
 }
